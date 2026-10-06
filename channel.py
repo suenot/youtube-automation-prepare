@@ -35,8 +35,8 @@ async def resolve_channel_id(page, handle):
                     wait_until="domcontentloaded", timeout=60_000)
     await page.wait_for_timeout(2500)
     html = await page.content()
-    m = (re.search(r'"channelId":"(UC[\w-]+)"', html)
-         or re.search(r'/channel/(UC[\w-]+)', html))
+    m = re.search(r'"channelMetadataRenderer"\s*:\s*\{.*?'
+                  r'"externalId"\s*:\s*"(UC[\w-]+)"', html, re.S)
     return m.group(1) if m else None
 
 
@@ -106,7 +106,7 @@ async def select_channel(page, channel_id=None, handle=None):
     if not target and handle:
         target = await resolve_channel_id(page, handle)
         if not target:
-            log(f"  could not resolve {handle} to a channel id")
+            raise RuntimeError(f"Could not resolve {handle} to a channel id")
 
     await page.goto(STUDIO, wait_until="domcontentloaded", timeout=60_000)
     active = await wait_for_channel_context(page)

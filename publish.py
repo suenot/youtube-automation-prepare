@@ -1,17 +1,19 @@
 import argparse
 import asyncio
+import json
 import re
 import sys
 import time
 from pathlib import Path
 
-from camoufox_session import make_camoufox, prepare_page, logged_in_youtube, log, shot
+from camoufox_session import (PROFILE_DIR, make_camoufox, prepare_page,
+                             logged_in_youtube, log, shot)
+from publication_state import RequestJournal, request_fingerprint
 from metadata import load_metadata
 from precheck import video_duration, check
 from channel import (select_channel, resolve_channel_id,
                      channel_id_from_url, wait_for_channel_context,
                      _strip_backdrops)
-from verify_result import parse_status
 import youtube_ui as ui
 
 STUDIO = "https://studio.youtube.com"
@@ -78,10 +80,18 @@ async def find_by_title(page, channel_id, title):
             await page.goto(f"{STUDIO}/channel/{channel_id}/videos/{tab}",
                             wait_until="domcontentloaded", timeout=60_000)
             await page.wait_for_timeout(9000)
+            await page.locator("ytcp-video-row, ytcp-video-section-content").first.wait_for(
+                state="visible", timeout=30_000)
+            if channel_id_from_url(page.url) != channel_id:
+                raise RuntimeError("Studio changed channel during duplicate check")
             rows = await page.evaluate(CONTENT_ROWS_JS)
+            if not rows:
+                text = await ui.all_text(page)
+                if not any(marker in text for marker in (
+                        "no content available", "no videos found", "upload your first video")):
+                    raise RuntimeError("No loaded video rows or confirmed empty content list")
         except Exception as e:
-            log(f"  (duplicate check on /{tab} failed: {e})")
-            continue
+            raise RuntimeError(f"Duplicate check on /{tab} failed; refusing upload") from e
         for row in rows:
             if needle in _norm(row["text"]):
                 return row["id"]
@@ -181,6 +191,10 @@ async def _open_upload(page, video, debug):
         await wait_for_channel_context(page, timeout_ms=20_000)
     except Exception as e:
         log(f"  upload route did not load: {e}")
+
+    if not active or channel_id_from_url(page.url) != active:
+        log("ERROR: Studio channel changed before attaching the file")
+        return False
 
     file_selectors = ["ytcp-uploads-dialog input[type='file']", "input[type='file']"]
     fi = await ui.first_present(page, file_selectors, 20_000)
@@ -631,6 +645,44 @@ UPLOAD_DONE_MARKERS = ("processing will begin", "upload complete",
                        "video processing", "checks complete", "your video is now")
 UPLOAD_WAIT_S = 900
 
+# Completion evidence belongs to the active upload/confirmation dialog. The
+# user's metadata and the Content list behind it can contain the same words.
+UPLOAD_STATUS_JS = r"""
+() => {
+  const parts = [], seen = new Set();
+  const visible = el => {
+    const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+  };
+  function walk(root) {
+    if (!root || seen.has(root)) return;
+    seen.add(root);
+    if (root.nodeType === 1) {
+      if (root.matches('input,textarea,[contenteditable],#title-textarea,#description-textarea,ytcp-video-row')) return;
+      if (getComputedStyle(root).display === 'none' || getComputedStyle(root).visibility === 'hidden') return;
+      if (root.shadowRoot) walk(root.shadowRoot);
+    }
+    if (root.nodeType === 3) {
+      const text = (root.textContent || '').trim();
+      if (text) parts.push(text);
+    }
+    for (const node of root.childNodes || []) walk(node);
+  }
+  const dialogs = Array.from(document.querySelectorAll('ytcp-uploads-dialog,ytcp-dialog,[role="dialog"]')).filter(visible);
+  for (const dialog of dialogs) walk(dialog);
+  return parts.join(' ').toLowerCase();
+}
+"""
+
+
+def upload_completion_confirmed(text):
+    if "keep this browser tab open" in text or "still uploading" in text:
+        return False
+    for progress in re.finditer(r"\buploading(?:\s+(\d+)%)?", text):
+        if progress.group(1) is None or int(progress.group(1)) < 100:
+            return False
+    return any(marker in text for marker in UPLOAD_DONE_MARKERS)
+
 
 async def _save_landed(page, done_locator):
     try:
@@ -668,8 +720,7 @@ async def save(page, debug):
         log("  ERROR: Save did not take effect (details dialog still open)")
         return False
     log("  clicked Save")
-    await wait_for_upload(page, debug)
-    return True
+    return await wait_for_upload(page, debug)
 
 
 async def wait_for_upload(page, debug):
@@ -682,21 +733,81 @@ async def wait_for_upload(page, debug):
     deadline = time.time() + UPLOAD_WAIT_S
     last = ""
     while time.time() < deadline:
-        text = await ui.all_text(page)
-        if any(m in text for m in UPLOAD_DONE_MARKERS):
+        text = await page.evaluate(UPLOAD_STATUS_JS)
+        if not isinstance(text, str):
+            raise RuntimeError("Upload status could not be inspected")
+        if upload_completion_confirmed(text):
             log("  upload complete")
             return True
         m = re.search(r"uploading (\d+)%", text)
         if m and m.group(1) != last:
             last = m.group(1)
             log(f"  uploading {last}%")
-        if "uploading" not in text:
-            # No dialog left to report on: nothing more to wait for.
-            log("  upload dialog gone; assuming the transfer finished")
-            return True
         await page.wait_for_timeout(5000)
-    log(f"  WARNING: still uploading after {UPLOAD_WAIT_S}s; closing anyway")
+    log(f"  ERROR: transfer not confirmed after {UPLOAD_WAIT_S}s")
     await shot(page, "yt_09_upload_timeout", debug)
+    return False
+
+
+async def verify_before_save(page, channel_id, visibility):
+    if channel_id_from_url(page.url) != channel_id:
+        log("ERROR: Studio channel changed before Save")
+        return False
+    name = {"private": "PRIVATE", "unlisted": "UNLISTED", "public": "PUBLIC"}[visibility]
+    radio = await ui.first_visible(page, [VISIBILITY_RADIO.format(name)], 5000)
+    if radio is None or await radio.get_attribute("aria-checked") != "true":
+        log(f"ERROR: expected {visibility} is not selected before Save")
+        return False
+    return True
+
+
+async def verify_saved_video(page, video_id, meta, visibility, channel_id=None):
+    """Read persisted details for this exact video, never an unrelated Public label."""
+    if not video_id or not re.fullmatch(r"[\w-]{11}", video_id):
+        return False
+    url = f"{STUDIO}/video/{video_id}/edit"
+    await _goto(page, url)
+    if page.url.rstrip("/") != url:
+        return False
+    title = await ui.first_visible(page, ["#title-textarea #textbox"], 30_000)
+    description = await ui.first_visible(page, ["#description-textarea #textbox"], 5000)
+    if title is None or description is None:
+        return False
+    text = await ui.all_text(page)
+    if any(reason in text for reason in ("processing abandoned", "too long", "upload failed")):
+        return False
+    if (not _same_field_text(await title.inner_text(), meta["title"])
+            or not _same_field_text(await description.inner_text(), meta["description"])):
+        return False
+    if await page.locator("ytcp-video-visibility").count():
+        control = await ui.first_visible(page, ["ytcp-video-visibility"], 5000)
+        if control is not None:
+            text = (await control.inner_text()).strip().lower()
+            if re.search(r"\b" + re.escape(visibility) + r"\b", text):
+                return True
+    # The current details editor omits visibility. Read the dedicated cell of
+    # this exact video in the bound channel's Content list instead.
+    if channel_id:
+        for tab in ("short", "upload"):
+            await _goto(page, f"{STUDIO}/channel/{channel_id}/videos/{tab}")
+            if await wait_for_channel_context(page) != channel_id:
+                return False
+            row = page.locator("ytcp-video-row").filter(
+                has=page.locator(f'a[href*="/video/{video_id}/"]'))
+            try:
+                await row.first.wait_for(state="visible", timeout=15_000)
+            except Exception:
+                continue
+            if await row.count() != 1:
+                return False
+            text = (await row.inner_text()).lower()
+            if any(reason in text for reason in ("processing abandoned", "too long", "upload failed")):
+                return False
+            cell = row.locator("[class*='visibility']")
+            if await cell.count() == 1 and await cell.is_visible():
+                return (await cell.inner_text()).strip().lower() == visibility
+            return False
+    log("ERROR: saved visibility could not be read for the exact video")
     return False
 
 
@@ -732,9 +843,37 @@ async def run(args):
     if not video.is_file():
         log(f"ERROR: --video not found: {video}")
         return 2
+    if args.metadata and not Path(args.metadata).expanduser().is_file():
+        log("ERROR: --metadata file was not found")
+        return 2
     meta = load_metadata(args.metadata, args.title, args.description, args.tags)
     if not meta["title"]:
         meta["title"] = video.stem.replace("-", " ").replace("_", " ").title()
+
+    if args.require_public and args.visibility != "public":
+        log("ERROR: --require-public requires explicit --visibility public")
+        return 2
+    binding_file = PROFILE_DIR / "channel.json"
+    binding = json.loads(binding_file.read_text()) if binding_file.exists() else {}
+    if binding:
+        if (args.channel_id and args.channel_id != binding["channel_id"]
+                or args.channel_handle and args.channel_handle.lower() != binding["handle"].lower()):
+            log("ERROR: requested channel differs from the persistent session binding")
+            return 5
+        args.channel_id = binding["channel_id"]
+        args.channel_handle = binding["handle"]
+    journal = RequestJournal(args.request_id, request_fingerprint(args, meta)) if args.request_id else None
+    previous = journal.lookup() if journal else None
+    if previous and not args.preflight:
+        status, vid = previous
+        log(f"REQUEST: status={status} video_id={vid or 'unknown'} — refusing another upload")
+        return 0 if status == "published" else 11
+    dur = video_duration(str(video))
+    ok, reason = check(dur, verified=False, allow_long=args.allow_long)
+    if not ok:
+        log(f"PRECHECK FAILED: {reason}")
+        return 8
+    log(f"  duration {int(dur)}s ok")
 
     async with make_camoufox(args.headless) as ctx:
         page = await prepare_page(ctx)
@@ -749,35 +888,54 @@ async def run(args):
         if not await clear_verify_gate(page, args, reload_after=True):
             return 7
 
-        cid = None
+        cid = await wait_for_channel_context(page)
         if args.channel_id or args.channel_handle:
-            cid = await select_channel(page, args.channel_id, args.channel_handle)
             wanted = args.channel_id or await resolve_channel_id(
                 page, args.channel_handle)
+            if not wanted:
+                log("ABORT: expected channel could not be resolved")
+                return 5
+            cid = await select_channel(page, wanted, args.channel_handle)
             # The Accounts panel regularly refuses to open. Uploading anyway
             # publishes to whichever channel happens to be active — a Chinese
             # Short landing on the Russian channel is not recoverable by
             # editing, only by deleting and re-uploading.
-            if wanted and cid != wanted:
+            if cid != wanted:
                 log(f"ABORT: on channel {cid}, wanted {wanted} "
                     f"({args.channel_handle or args.channel_id}) — "
                     f"retry once the switch lands")
                 return 5
+
+        if not cid:
+            log("ABORT: active Studio channel could not be verified")
+            return 5
+
+        if args.preflight and previous and previous[1]:
+            verified = await verify_saved_video(page, previous[1], meta, args.visibility, cid)
+            log(f"PREFLIGHT: stored_video={previous[1]} persisted_metadata_visibility={'ok' if verified else 'failed'}; no upload")
+            if verified:
+                journal.published(previous[1])
+            return 0 if verified else 6
 
         if cid and not args.allow_duplicate:
             dup = await find_by_title(page, cid, meta["title"])
             if dup:
                 log(f"ALREADY ON THE CHANNEL as {dup} — refusing to upload a "
                     f"second copy (pass --allow-duplicate to override)")
+                if args.preflight:
+                    verified = await verify_saved_video(page, dup, meta, args.visibility, cid)
+                    log(f"PREFLIGHT: existing_video={dup} persisted_metadata_visibility={'ok' if verified else 'failed'}; no upload")
+                    return 0 if verified else 6
                 return 10
 
-        verified = False  # conservative default; long videos need --allow-long
-        dur = video_duration(str(video))
-        ok, reason = check(dur, verified, args.allow_long)
-        if not ok:
-            log(f"PRECHECK FAILED: {reason}")
-            return 8
-        log(f"  duration {int(dur)}s ok")
+        if args.preflight:
+            log(f"PREFLIGHT: channel={cid} visibility={args.visibility} metadata=loaded duplicate=absent; no upload")
+            return 0
+        if channel_id_from_url(page.url) != cid:
+            log("ABORT: Studio channel changed before upload")
+            return 5
+        if journal:
+            journal.start()  # Commit before a file can be attached, including crash recovery.
 
         try:
             if not await open_upload(page, video, args.debug):
@@ -809,7 +967,8 @@ async def run(args):
             publishes a duplicate.
             """
             log(f"  {stage} failed; checking whether the video landed anyway")
-            await wait_for_upload(page, args.debug)
+            if not await wait_for_upload(page, args.debug):
+                return ""
             if not cid:
                 return ""
             return await find_by_title(page, cid, meta["title"])
@@ -820,16 +979,19 @@ async def run(args):
                 ("visibility step", lambda: click_next(page, 3, args.debug)),
                 ("visibility", lambda: set_visibility(page, args.visibility,
                                                       args.debug)),
+                ("pre-submit verification", lambda: verify_before_save(page, cid, args.visibility)),
                 ("save", lambda: save(page, args.debug))):
             if await step():
                 continue
             found = await landed_anyway(stage)
             if found:
+                if journal:
+                    journal.remember_video(found)
                 log(f"  the {stage} step failed, but the video is on the channel "
                     f"as {found} — not retrying")
                 log(f"VIDEO_ID: {found}")
-                log("RESULT: status=present note=wizard-incomplete")
-                return 0
+                log("RESULT: status=uncertain note=wizard-incomplete; finish the existing video")
+                return 9
             log(f"PUBLISH FAILED: {stage} did not take effect; "
                 f"the upload is left as a draft")
             return 9
@@ -865,6 +1027,8 @@ async def run(args):
                 log(f"  find_by_title fallback failed: {e}")
             log(f"VIDEO_ID: {vid}" if vid
                 else "VIDEO_ID: not found in save dialog (find_by_title fallback empty)")
+        if journal:
+            journal.remember_video(vid)
 
         # YouTube may still be running content checks (especially on Shorts,
         # whose NotebookLM background music gets Content-ID-flagged) and then
@@ -873,6 +1037,8 @@ async def run(args):
         # isn't present (desktop videos pass checks cleanly).
         try:
             for _ in range(3):
+                if args.visibility != "public":
+                    break
                 if await ui.click_text(page, ["Publish anyway",
                                               "Опубликовать в любом случае"], 3000):
                     log("  clicked 'Publish anyway' (override checks-recommend-private)")
@@ -882,18 +1048,15 @@ async def run(args):
         except Exception as e:
             log(f"  Publish-anyway note: {str(e).splitlines()[0][:50]}")
 
-        active = channel_id_from_url(page.url)
-        if active:
-            await _goto(page, f"{STUDIO}/channel/{active}/videos/upload")
-            await page.wait_for_timeout(5000)
-        text = await ui.all_text(page)
-        status, note = parse_status(text, meta["title"])
-        log(f"RESULT: status={status} note={note}")
+        verified = await verify_saved_video(page, vid, meta, args.visibility, cid)
+        if verified and journal:
+            journal.published(vid)
+        log(f"RESULT: status={'published' if verified else 'uncertain'} visibility={args.visibility}")
         if args.keep_open:
             log("--keep-open: browser stays open. Ctrl+C to quit.")
             while True:
                 await page.wait_for_timeout(3600_000)
-        return 0 if status in ("present", "processing") else 6
+        return 0 if verified else 6
 
 
 def parse_args(argv=None):
@@ -912,6 +1075,9 @@ def parse_args(argv=None):
     p.add_argument("--allow-long", action="store_true")
     p.add_argument("--allow-duplicate", action="store_true",
                    help="upload even if the channel already has this title")
+    p.add_argument("--request-id", default="", help="Durable request key; never repeat a started upload")
+    p.add_argument("--preflight", action="store_true", help="Verify media/session/channel/duplicates without uploading")
+    p.add_argument("--require-public", action="store_true", help="Reject any visibility other than explicit public")
     p.add_argument("--verify-wait", type=int, default=600)
     p.add_argument("--headless", action="store_true")
     p.add_argument("--keep-open", action="store_true")
@@ -930,6 +1096,9 @@ def main(argv=None):
         return 2
     except KeyboardInterrupt:
         return 130
+    except (ValueError, RuntimeError) as exc:
+        log(f"ERROR: {exc}")
+        return 9
 
 
 if __name__ == "__main__":

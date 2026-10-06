@@ -5,6 +5,8 @@ __pycache__/
 .DS_Store
 .camoufox_profile/
 .camoufox_fp.pkl
+.camoufox_profile.lock
+.local/
 debug/
 output/
 input/

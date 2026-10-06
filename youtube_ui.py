@@ -41,10 +41,7 @@ JS_DEEP_DUMP = r"""
 
 
 async def all_text(page):
-    try:
-        return await page.evaluate(JS_ALL_TEXT)
-    except Exception:
-        return ""
+    return await page.evaluate(JS_ALL_TEXT)
 
 
 async def verify_gate_present(page):

@@ -43,8 +43,9 @@ one session at a time, at your own risk. Provided AS IS.
 
 ## Setup
 
-Use Python **3.11–3.13**. The pinned Camoufox 0.5.4 package uses Playwright
-1.59–1.60, matching the current Camoufox browser protocol.
+Use Python **3.11–3.13**. Camoufox **0.5.7** and Playwright **1.60.0** are
+pinned together. The browser must match Camoufox's paired **156.0.1-beta.34**
+release; a different build is rejected before launch.
 
 ```bash
 python3.11 -m venv venv && venv/bin/pip install -r requirements.txt
@@ -56,16 +57,48 @@ venv/bin/python login.py
 
 `ffmpeg` (for `ffprobe`) must be on `PATH` for the length pre-check.
 
+### Reuse an authorized Firefox session
+
+Firefox is only the session source. Import into a new private Camoufox profile
+and verify the expected authenticated Studio channel before saving it:
+
+```bash
+venv/bin/python login.py \
+  --firefox-profile '/path/to/Firefox/Profiles/your.default-release' \
+  --channel-handle @your-channel
+venv/bin/python login.py --status --channel-handle @your-channel
+```
+
+The importer takes a read-only online SQLite snapshot in memory. It imports
+only cookies scoped to `youtube.com`, `www.youtube.com`, `studio.youtube.com`,
+`google.com` and `accounts.google.com`, retains host/path scope and skips
+expired, container and partitioned cookies. It never exports or logs cookie
+values. An existing Camoufox profile is rejected; a failed identity check
+discards the new temporary profile. Subsequent commands use the bound private
+Camoufox session. A lock prevents simultaneous use of the same profile.
+
+For a separately installed paired browser, set `CAMOUFOX_EXECUTABLE_PATH` to
+the Camoufox executable. Its release `version.json` must be in a parent
+directory. On macOS, `application.ini` must be available beside the executable
+(the browser archive provides it in `../Resources/application.ini`).
+
 ## Usage
 
 ```bash
-# Publish a video_maker bundle as a private draft to a specific channel
+# Check a public video_maker publication without uploading or pressing Publish
 venv/bin/python publish.py \
     --video    ../video_maker/output/SLUG/SLUG.mp4 \
     --metadata ../video_maker/output/SLUG/SLUG_metadata.json \
     --thumbnail ../video_maker/output/SLUG/SLUG_thumbnail.png \
     --channel-handle @your-channel \
-    --visibility private --debug
+    --visibility public --require-public \
+    --request-id your-unique-video-id --preflight --debug
+
+# Publish after preflight; keep the same --request-id on every retry
+venv/bin/python publish.py \
+    --video clip.mp4 --metadata clip_metadata.json \
+    --channel-handle @your-channel \
+    --visibility public --require-public --request-id your-unique-video-id
 
 # Manual, unlisted, on a channel by id
 venv/bin/python publish.py --video clip.mp4 --title "Hi" \
@@ -79,6 +112,24 @@ venv/bin/python publish.py --video clip.mp4 --title "Hi" \
 `--channel-handle`, `--visibility {private,unlisted,public}` (default
 **private**), `--made-for-kids` (default: not for kids), `--allow-long`
 (bypass the 15-min unverified block), `--verify-wait`, `--keep-open`, `--debug`.
+
+`--require-public` rejects any visibility other than explicit `--visibility
+public`; ordinary invocations retain the private default. `--preflight` checks
+media, session, channel and existing uploads without attaching the file. If it
+finds an existing title, it verifies that video's saved metadata and requested
+visibility. A real publication rechecks the bound channel before attaching the
+file and the channel plus selected visibility immediately before Save, then
+reads the exact video's saved title, description and visibility.
+
+Use `--request-id` for repeatable automation. The private SQLite journal in
+`.local/publications.sqlite` records an uncertain attempt before opening the
+upload. The same ID cannot upload again after a crash or failed wizard. Changed
+media, metadata or publication options with the same ID are rejected. A verified
+publication returns its saved result on a retry. If an attempt is uncertain,
+find and finish its existing draft/video; retain the journal and do not assign
+a new request ID to blindly retry. Title lookup also blocks existing uploads
+and stops when Studio cannot be inspected. `--allow-duplicate` does not override
+the durable request guard.
 
 ### Schedule an uploaded video
 
@@ -104,6 +155,8 @@ values stored by Studio after saving. Re-running the same schedule is a no-op.
 `5` details failed · `6` couldn't finish/verify · `7` blocked by "Verify it's
 you" (clear it once in the window with `--keep-open`) · `8` pre-check failed
 (video too long for an unverified channel — verify the channel or `--allow-long`).
+`9` failed/uncertain publication or unsafe preflight · `10` existing title ·
+`11` previously started request whose publication is uncertain.
 
 ## Why videos get rejected as "Processing abandoned"
 

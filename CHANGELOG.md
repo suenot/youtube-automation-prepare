@@ -12,6 +12,26 @@ Versioning.
 - Rename the repository to `youtube-automation-prepare` and update the README
   project name and pipeline links.
 
+## [0.2.0] - 2026-10-07
+
+### Added
+
+- Import a scoped, read-only Firefox cookie snapshot into Camoufox only after
+  verifying the expected authenticated YouTube channel.
+- Verify the saved session with `login.py --status`, run publication preflight
+  without uploading, and require Public explicitly with `--require-public`.
+- Persist started requests before upload with `--request-id` to prevent a
+  second upload after a crash, uncertain result or verified publication.
+
+### Fixed
+
+- Stop on unresolved/mismatched channels, unreadable duplicate lists and upload
+  inspection failures; recheck channel and visibility before submitting.
+- Require the exact saved video's title, description and visibility to match
+  before reporting publication success.
+- Pin Camoufox 0.5.7 and Playwright 1.60.0 to the paired browser release, retain a
+  stable fingerprint and prevent concurrent use of the persistent profile.
+
 ## [0.1.10] - 2026-08-16
 
 ### Fixed

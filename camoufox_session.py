@@ -1,5 +1,9 @@
+import fcntl
+import json
+import os
 import pickle
 import time
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -32,25 +36,83 @@ def _stable_fingerprint():
     return None
 
 
-def make_camoufox(headless=False):
+@contextmanager
+def profile_lock(profile=PROFILE_DIR):
+    lock = Path(str(profile) + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a") as stream:
+        lock.chmod(0o600)
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Camoufox profile is busy; close the other session") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def verify_browser_build():
+    from camoufox.browser_pin import load_pin
+    from camoufox.multiversion import get_active_path
+
+    executable = os.environ.get("CAMOUFOX_EXECUTABLE_PATH")
+    if executable:
+        metadata = next((p / "version.json" for p in Path(executable).resolve().parents
+                         if (p / "version.json").is_file()), None)
+    else:
+        active = get_active_path()
+        metadata = active / "version.json" if active else None
+    if not metadata or not metadata.is_file():
+        raise RuntimeError("Install the paired browser with python -m camoufox fetch")
+    pin = load_pin()
+    actual = json.loads(metadata.read_text(encoding="utf-8"))
+    if not pin or (actual.get("version"), actual.get("build")) != (pin.version, pin.build):
+        raise RuntimeError("Camoufox browser differs from the package's paired release")
+
+
+@asynccontextmanager
+async def make_camoufox(headless=False, profile_dir=PROFILE_DIR):
     from camoufox.async_api import AsyncCamoufox
-    PROFILE_DIR.mkdir(exist_ok=True)
+    from camoufox.fingerprints import generate_fingerprint
+    verify_browser_build()
+    profile_dir = Path(profile_dir)
+    profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    profile_dir.chmod(0o700)
     # Camoufox 0.5.x treats bool as an int and serializes humanize=True as
     # `humanize:maxTime=true`; the browser requires a double and then stops
     # servicing trusted mouse input. Pass an explicit float instead.
     opts = dict(headless=headless, humanize=1.0, geoip=_geoip_available(),
                 block_images=False, persistent_context=True,
-                user_data_dir=str(PROFILE_DIR), window=(1920, 1080))
-    fp = _stable_fingerprint()
-    if fp is not None:
+                user_data_dir=str(profile_dir), window=(1920, 1080),
+                locale="en-US", main_world_eval=True, i_know_what_im_doing=True)
+    with profile_lock(profile_dir):
+        fp_path = profile_dir / "fingerprint.json"
+        if fp_path.exists():
+            fp = json.loads(fp_path.read_text(encoding="utf-8"))
+        else:
+            fp = _stable_fingerprint() if profile_dir == PROFILE_DIR else None
+            if fp is None:
+                fp = generate_fingerprint(os="macos")
+                fp_path.write_text(json.dumps(fp), encoding="utf-8")
+                fp_path.chmod(0o600)
         opts["fingerprint"] = fp
-    else:
-        opts["os"] = "macos"
-    return AsyncCamoufox(**opts)
+        try:
+            async with AsyncCamoufox(**opts) as context:
+                yield context
+        finally:
+            for parent, _dirs, files in os.walk(profile_dir):
+                Path(parent).chmod(0o700)
+                for name in files:
+                    path = Path(parent) / name
+                    if not path.is_symlink():
+                        path.chmod(0o600)
 
 
 async def prepare_page(context):
-    return context.pages[0] if context.pages else await context.new_page()
+    page = context.pages[0] if context.pages else await context.new_page()
+    await page.set_viewport_size({"width": 1920, "height": 1080})
+    return page
 
 
 async def logged_in_youtube(page):
