@@ -7,6 +7,11 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Rename the repository to `youtube-automation-prepare` and update the README
+  project name and pipeline links.
+
 ## [0.1.10] - 2026-08-16
 
 ### Fixed
