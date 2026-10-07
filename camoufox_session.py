@@ -2,9 +2,11 @@ import fcntl
 import json
 import os
 import pickle
+import re
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from pathlib import Path
+from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
 PROFILE_DIR = HERE / ".camoufox_profile"
@@ -72,7 +74,7 @@ def verify_browser_build():
 
 
 @asynccontextmanager
-async def make_camoufox(headless=False, profile_dir=PROFILE_DIR):
+async def make_camoufox(headless=False, profile_dir=PROFILE_DIR, profile_locked=False):
     from camoufox.async_api import AsyncCamoufox
     from camoufox.fingerprints import generate_fingerprint
     verify_browser_build()
@@ -86,7 +88,9 @@ async def make_camoufox(headless=False, profile_dir=PROFILE_DIR):
                 block_images=False, persistent_context=True,
                 user_data_dir=str(profile_dir), window=(1920, 1080),
                 locale="en-US", main_world_eval=True, i_know_what_im_doing=True)
-    with profile_lock(profile_dir):
+    # The refresh path holds profile_lock around its cookie backup, browser use,
+    # and rollback; it must not try to acquire the same flock a second time.
+    with nullcontext() if profile_locked else profile_lock(profile_dir):
         fp_path = profile_dir / "fingerprint.json"
         if fp_path.exists():
             fp = json.loads(fp_path.read_text(encoding="utf-8"))
@@ -117,8 +121,20 @@ async def prepare_page(context):
 
 async def logged_in_youtube(page):
     try:
-        cks = await page.context.cookies("https://www.youtube.com")
-        return any(c["name"] in ("__Secure-1PSID", "SID") for c in cks)
+        # A stale SID can survive after Google redirects Studio to its signed-out
+        # account chooser. Require an authenticated Studio channel/video page and
+        # its account control instead of inferring login from cookie presence.
+        for _ in range(20):
+            url = urlsplit(page.url)
+            if url.hostname != "studio.youtube.com":
+                return False
+            if re.match(r"^/(?:channel/UC[\w-]+|video/[\w-]+)(?:/|$)", url.path):
+                avatar = page.locator("button#avatar-btn, ytcp-icon-button#avatar-btn, "
+                                      "button[aria-label='Account']").first
+                if await avatar.is_visible():
+                    return True
+            await page.wait_for_timeout(500)
+        return False
     except Exception:
         return False
 

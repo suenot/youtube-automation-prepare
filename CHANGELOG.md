@@ -12,6 +12,22 @@ Versioning.
 - Rename the repository to `youtube-automation-prepare` and update the README
   project name and pipeline links.
 
+## [0.2.1] - 2026-10-08
+
+### Added
+
+- Refresh a saved, channel-bound Camoufox session from a read-only Firefox
+  cookie snapshot with `login.py --refresh`. Keep the profile fingerprint,
+  channel binding and publication journal; restore the previous cookie files
+  if authentication or channel verification fails. Retain the private recovery
+  copy if rollback itself fails.
+
+### Fixed
+
+- Treat a Google sign-in or account-chooser redirect as signed out even when
+  stale SID cookies remain. Require an authenticated Studio channel or video page and
+  visible account control before continuing.
+
 ## [0.2.0] - 2026-10-07
 
 ### Added

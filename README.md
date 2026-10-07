@@ -67,6 +67,12 @@ venv/bin/python login.py \
   --firefox-profile '/path/to/Firefox/Profiles/your.default-release' \
   --channel-handle @your-channel
 venv/bin/python login.py --status --channel-handle @your-channel
+
+# If the saved session later expires, refresh it from the same Firefox account.
+venv/bin/python login.py \
+  --firefox-profile '/path/to/Firefox/Profiles/your.default-release' \
+  --channel-handle @your-channel --refresh
+venv/bin/python login.py --status --channel-handle @your-channel
 ```
 
 The importer takes a read-only online SQLite snapshot in memory. It imports
@@ -74,8 +80,15 @@ only cookies scoped to `youtube.com`, `www.youtube.com`, `studio.youtube.com`,
 `google.com` and `accounts.google.com`, retains host/path scope and skips
 expired, container and partitioned cookies. It never exports or logs cookie
 values. An existing Camoufox profile is rejected; a failed identity check
-discards the new temporary profile. Subsequent commands use the bound private
-Camoufox session. A lock prevents simultaneous use of the same profile.
+discards the new temporary profile. `--refresh` requires an existing verified
+profile bound to the same channel. It updates only the Google/YouTube session
+cookies and restores the prior cookie files if authentication or channel
+verification fails. If rollback itself fails, the private recovery directory is
+retained and its path is reported. The channel binding, browser fingerprint and publication
+journal remain in place. Subsequent commands use the bound private Camoufox
+session. A lock prevents simultaneous use of the same profile. `--status` requires
+an authenticated Studio channel page and visible account control; a saved SID
+cookie alone does not count as a valid login.
 
 For a separately installed paired browser, set `CAMOUFOX_EXECUTABLE_PATH` to
 the Camoufox executable. Its release `version.json` must be in a parent
