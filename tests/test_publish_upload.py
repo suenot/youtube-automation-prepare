@@ -87,19 +87,30 @@ async def test_details_validation_fails_closed_when_dom_inspection_breaks():
 
 
 class ContenteditableKeyboard:
-    async def press(self, _keys):
-        return None
+    """Keys land in the field; nothing else does.
 
-    async def insert_text(self, _value):
-        return None
+    Studio's Polymer editor updates its persisted model from the input events
+    that real keys produce. The field below refuses `fill`, so a publisher
+    that went back to putting text in without typing it fails this test.
+    """
 
-    async def type(self, _value, delay=0):
-        return None
+    def __init__(self, field):
+        self.field = field
+
+    async def press(self, keys):
+        if keys == "Delete":
+            self.field.value = ""
+
+    async def insert_text(self, value):
+        self.field.value += value
+
+    async def type(self, value, delay=0):
+        self.field.value += value
 
 
 class ContenteditablePage:
-    def __init__(self):
-        self.keyboard = ContenteditableKeyboard()
+    def __init__(self, field):
+        self.keyboard = ContenteditableKeyboard(field)
 
     async def wait_for_timeout(self, _timeout_ms):
         return None
@@ -122,22 +133,18 @@ class PolymerContenteditable:
         return None
 
     async def fill(self, _value):
-        return None
+        raise AssertionError("The field must be typed into, not filled")
 
     async def inner_text(self):
         return self.value
 
-    async def evaluate(self, _script, value):
-        self.value = value
-        return True
-
 
 @pytest.mark.asyncio
-async def test_contenteditable_uses_polymer_input_fallback():
+async def test_contenteditable_is_typed_into_not_filled():
     field = PolymerContenteditable()
 
     assert await _fill_upload_contenteditable(
-        ContenteditablePage(), field, "Описание", "description") is True
+        ContenteditablePage(field), field, "Описание", "description") is True
     assert field.value == "Описание"
 
 

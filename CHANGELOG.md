@@ -7,6 +7,18 @@ Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Click Studio's controls with the mouse instead of dispatching `MouseEvent` sequences at the elements found in the shadow DOM. A dispatched event reaches the handler carrying `isTrusted: false`, which is a page's plainest sign that nobody clicked anything. The shadow-DOM search stays; it only reads. Affects `finish_draft_from_list.py`, `set_video_language.py` and `upload_subtitles.py`.
+- Type the upload title and description instead of trying `insert_text`, then `fill`, then `type(delay=0)`, then `execCommand("insertText")`. Measured on a probe page, all four put the text in with a single `input` event and not one keystroke. Typing produces the per-character input events Polymer listens for, so the persisted model is updated the same way; the existing read-back verification is unchanged, so a field that does not take the text still fails.
+- Scroll the virtualized language dropdown with the wheel rather than by assigning `scrollTop` from page script.
+
+### Added
+
+- `human.py`, the input module measured and documented in `docs-site/@docs/guides/what-a-page-sees-when-we-type.md`, kept in step with the copy in `tiktok-automation`: an eased approach to a control, a pause before pressing, typing with a varying interval, insertion for what a keyboard cannot produce, and a real clipboard paste behind an opt-in.
+- `youtube_ui.click_text_in_shadow` and `youtube_ui.wheel_scroll_list`.
+- Test that fails the build if any module in the repository fabricates a browser event or calls `execCommand` again, and a test that the upload field is typed into rather than filled.
+
 ### Changed
 
 - Rename the repository to `youtube-automation-prepare` and update the README

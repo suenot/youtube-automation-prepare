@@ -77,39 +77,13 @@ async def file_input(page, timeout_ms=8000):
 
 
 async def click_smallest_text(page, phrase, timeout_ms=8000):
-    """Click a visible label even when Studio wraps it in a non-button div."""
-    needle = phrase.lower()
-    script = r"""needle => {
-      const seen = new Set(), items = [];
-      function walk(root) {
-        for (const el of root && root.querySelectorAll ? root.querySelectorAll('*') : []) {
-          if (seen.has(el)) continue; seen.add(el);
-          const box = el.getBoundingClientRect();
-          const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-          if (box.width && box.height && text.toLowerCase() === needle) items.push({el, area: box.width * box.height});
-          if (el.shadowRoot) walk(el.shadowRoot);
-        }
-      }
-      walk(document);
-      items.sort((a, b) => a.area - b.area);
-      if (!items.length) return false;
-      const el = items[0].el;
-      for (const type of ['pointerdown','mousedown','pointerup','mouseup','click']) {
-        el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, composed: true}));
-      }
-      return true;
-    }"""
-    deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
-    while asyncio.get_running_loop().time() < deadline:
-        try:
-            hit = await page.evaluate(script, needle)
-            if hit:
-                await page.wait_for_timeout(500)
-                return True
-        except Exception:
-            pass
-        await page.wait_for_timeout(300)
-    return False
+    """Click a visible label even when Studio wraps it in a non-button div.
+
+    The label is found in page script because Studio keeps it behind shadow
+    roots, and then clicked with the real mouse. This used to dispatch a
+    MouseEvent sequence at the element, which arrives with isTrusted: false.
+    """
+    return await ui.click_text_in_shadow(page, phrase.lower(), timeout_ms)
 
 
 async def open_video_language_editor(page, language, timeout_ms=8000, debug=False):

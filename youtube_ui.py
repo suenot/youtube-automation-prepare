@@ -1,5 +1,51 @@
 import time
 
+import human
+
+JS_FIND_TEXT = r"""needle => {
+  // Finds the smallest visible element whose text is exactly the needle,
+  // across open shadow roots, and returns it. It only reads: Studio's controls
+  // used to be driven by dispatching MouseEvents at whatever this found, and a
+  // dispatched event carries isTrusted: false, which is a page's clearest
+  // possible sign that nobody clicked anything. The caller clicks the returned
+  // element with the real mouse instead.
+  const seen = new Set(), items = [];
+  const want = needle.toLowerCase();
+  function walk(root) {
+    let els; try { els = root.querySelectorAll('*'); } catch (e) { return; }
+    for (const el of els) {
+      if (seen.has(el)) continue; seen.add(el);
+      const box = el.getBoundingClientRect();
+      const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (box.width && box.height && text.toLowerCase() === want)
+        items.push({el, area: box.width * box.height});
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  }
+  walk(document);
+  items.sort((a, b) => a.area - b.area);
+  return items.length ? items[0].el : null;
+}"""
+
+JS_SCROLLABLE = r"""() => {
+  // The tallest scrollable container on screen: a Studio dropdown mounts its
+  // options lazily, so the wanted one may not exist until the list scrolls.
+  const seen = new Set(), lists = [];
+  function walk(root) {
+    let els; try { els = root.querySelectorAll('*'); } catch (e) { return; }
+    for (const el of els) {
+      if (seen.has(el)) continue; seen.add(el);
+      const box = el.getBoundingClientRect();
+      if (el.scrollHeight > el.clientHeight + 40 && el.clientHeight > 200
+          && box.width && box.height) lists.push({el, area: box.width * box.height});
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  }
+  walk(document);
+  lists.sort((a, b) => b.area - a.area);
+  return lists.length ? lists[0].el : null;
+}"""
+
 JS_ALL_TEXT = r"""
 () => {
   const acc=[]; const seen=new Set();
@@ -78,9 +124,65 @@ async def click_text(page, words, timeout_ms=4000):
     return False
 
 
+async def find_in_shadow(page, needle):
+    """The smallest visible element whose text is exactly `needle`, or None."""
+    handle = await page.evaluate_handle(JS_FIND_TEXT, needle)
+    element = handle.as_element()
+    if element is None:
+        await handle.dispose()
+    return element
+
+
+async def click_text_in_shadow(page, needle, timeout_ms=4000):
+    """Click a Studio control by its exact text, with the real mouse.
+
+    Studio's Polymer controls live behind shadow roots, which is why the
+    element is found in page script. The click itself is not: a dispatched
+    MouseEvent reaches the handler carrying isTrusted: false.
+    """
+    deadline = time.time() + timeout_ms / 1000
+    while True:
+        element = await find_in_shadow(page, needle)
+        if element is not None:
+            try:
+                await human.click(page, element)
+                return True
+            except Exception:
+                pass
+            finally:
+                await element.dispose()
+        if time.time() >= deadline:
+            return False
+        await page.wait_for_timeout(300)
+
+
+async def wheel_scroll_list(page, delta=420):
+    """Scroll the tallest scrollable container with the wheel, over its centre.
+
+    Setting scrollTop from page script scrolls without anyone touching the
+    wheel; this leaves the wheel events a person leaves.
+    """
+    handle = await page.evaluate_handle(JS_SCROLLABLE)
+    element = handle.as_element()
+    if element is None:
+        await handle.dispose()
+        return False
+    try:
+        box = await element.bounding_box()
+        if not box:
+            return False
+        await human.move_to(page, box["x"] + box["width"] / 2,
+                            box["y"] + box["height"] / 2)
+        await page.mouse.wheel(0, delta)
+        await page.wait_for_timeout(350)
+        return True
+    finally:
+        await element.dispose()
+
+
 async def fill_contenteditable(page, loc, text):
     try:
-        await loc.click(timeout=4000)
+        await human.click(page, loc)
         await page.wait_for_timeout(200)
         for combo in ("Meta+A", "Control+A"):
             try:
@@ -89,7 +191,8 @@ async def fill_contenteditable(page, loc, text):
                 pass
         await page.keyboard.press("Delete")
         await page.wait_for_timeout(150)
-        await page.keyboard.type(text, delay=0)
+        # type(delay=0) is a metronome with no gap at all between keystrokes.
+        await human.type_segments(page, text)
         await page.wait_for_timeout(300)
         return True
     except Exception:

@@ -14,6 +14,7 @@ from precheck import video_duration, check
 from channel import (select_channel, resolve_channel_id,
                      channel_id_from_url, wait_for_channel_context,
                      _strip_backdrops)
+import human
 import youtube_ui as ui
 
 STUDIO = "https://studio.youtube.com"
@@ -280,56 +281,39 @@ async def _fill_upload_contenteditable(page, loc, value, field_name="field"):
 
     A forced click can look successful while focus remains on the dialog body.
     In that state the title stays as the filename and the description stays
-    empty. Focus explicitly, verify the exact field, and retry with real key
-    events if direct text insertion did not land.
+    empty. Focus explicitly, verify the exact field, and only then type.
+
+    This used to try insert_text, then fill, then type(delay=0), then
+    execCommand('insertText'), keeping whichever landed. All four put the text
+    in without anyone typing it: measured on a probe page, each produced a
+    single input event and not one keystroke, which is a page's plainest sign
+    that it is not talking to a person. Typing produces the per-character input
+    events Polymer listens for, so the persisted model is updated the same way,
+    and the verification below is unchanged: a field that did not take the text
+    still fails rather than passing quietly.
     """
-    for method in ("insert_text", "fill", "type", "exec_command"):
+    for attempt in range(3):
         try:
             await loc.scroll_into_view_if_needed(timeout=5000)
             if not await _try_click(page, loc):
                 continue
             await loc.focus(timeout=5000)
-            if method == "exec_command":
-                # Studio's Polymer description editor can ignore Playwright's
-                # fill/type APIs even though it is a normal contenteditable.
-                # execCommand produces the input event Polymer listens for and
-                # therefore updates the persisted model, not just textContent.
-                result = await loc.evaluate(
-                    """(el, replacement) => {
-                      el.focus();
-                      const selection = window.getSelection();
-                      const range = document.createRange();
-                      range.selectNodeContents(el);
-                      selection.removeAllRanges();
-                      selection.addRange(range);
-                      return document.execCommand(
-                        'insertText', false, replacement);
-                    }""",
-                    value,
-                )
-                if not result:
-                    continue
-            else:
-                await page.keyboard.press("Meta+A")
-                await page.keyboard.press("Delete")
-                if method == "insert_text":
-                    await page.keyboard.insert_text(value)
-                elif method == "fill":
-                    await loc.fill(value)
-                else:
-                    await page.keyboard.type(value, delay=0)
+            await page.keyboard.press("Meta+A")
+            await page.keyboard.press("Delete")
+            await human.type_segments(page, value)
             await page.wait_for_timeout(600)
             actual = await loc.inner_text()
             if not _same_field_text(actual, value):
-                log(f"  {field_name} {method} did not land "
+                log(f"  {field_name} did not land on attempt {attempt + 1} "
                     f"(field reads {actual.strip()[:80]!r})")
                 continue
             await page.evaluate("() => document.activeElement && document.activeElement.blur()")
             await page.wait_for_timeout(800)
             if _same_field_text(await loc.inner_text(), value):
                 return True
+            log(f"  {field_name} reverted after blur on attempt {attempt + 1}")
         except Exception as e:
-            log(f"  {field_name} {method} failed: "
+            log(f"  {field_name} attempt {attempt + 1} failed: "
                 f"{type(e).__name__}: {str(e).splitlines()[0][:120]}")
             continue
     return False

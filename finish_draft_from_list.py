@@ -9,33 +9,12 @@ import argparse
 import asyncio
 import json
 
+import youtube_ui as ui
 from camoufox_session import make_camoufox, prepare_page, logged_in_youtube, log
 from channel import resolve_channel_id, select_channel
 from publish import fill_details, click_next, set_visibility, save
 
 STUDIO = "https://studio.youtube.com"
-
-OPEN_DRAFT_JS = r"""needle => {
-  const seen = new Set(), items = [];
-  function walk(root) {
-    for (const el of root && root.querySelectorAll ? root.querySelectorAll('*') : []) {
-      if (seen.has(el)) continue; seen.add(el);
-      const box = el.getBoundingClientRect();
-      const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (box.width && box.height && text.toLowerCase() === needle) items.push({el, area: box.width * box.height});
-      if (el.shadowRoot) walk(el.shadowRoot);
-    }
-  }
-  walk(document);
-  if (!items.length) return false;
-  items.sort((a, b) => a.area - b.area);
-  const el = items[0].el;
-  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-    el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, composed: true}));
-  }
-  return true;
-}"""
-
 
 async def run(args):
     meta = json.load(open(args.metadata))
@@ -51,7 +30,8 @@ async def run(args):
         await page.goto(f"{STUDIO}/channel/{wanted}/videos",
                         wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_timeout(8000)
-        await page.evaluate(OPEN_DRAFT_JS, "edit draft")
+        if not await ui.click_text_in_shadow(page, "edit draft", timeout_ms=15_000):
+            raise RuntimeError("Edit draft row control never appeared")
         log("  clicked Edit draft on the list row")
         await page.wait_for_timeout(6000)
 

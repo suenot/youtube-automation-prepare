@@ -14,73 +14,19 @@ import youtube_ui as ui
 
 STUDIO = "https://studio.youtube.com"
 
-CLICK_TEXT_JS = r"""needle => {
-  const seen = new Set(), items = [];
-  function walk(root) {
-    for (const el of root && root.querySelectorAll ? root.querySelectorAll('*') : []) {
-      if (seen.has(el)) continue; seen.add(el);
-      const box = el.getBoundingClientRect();
-      const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (box.width && box.height && text.toLowerCase() === needle) items.push({el, area: box.width * box.height});
-      if (el.shadowRoot) walk(el.shadowRoot);
-    }
-  }
-  walk(document);
-  if (!items.length) return false;
-  items.sort((a, b) => a.area - b.area);
-  const el = items[0].el;
-  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-    el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, composed: true}));
-  }
-  return true;
-}"""
+async def pick_option(page, language, passes=40):
+    """Wheel the virtualized list until the option mounts, then click it.
 
-SCROLL_FIND_CLICK_JS = r"""needle => {
-  const seen = new Set(), lists = [];
-  function collect(root) {
-    for (const el of root && root.querySelectorAll ? root.querySelectorAll('*') : []) {
-      if (seen.has(el)) continue; seen.add(el);
-      if (el.scrollHeight > el.clientHeight + 40 && el.clientHeight > 200) lists.push(el);
-      if (el.shadowRoot) collect(el.shadowRoot);
-    }
-  }
-  collect(document);
-  const want = needle.toLowerCase();
-  function findOption() {
-    const s = new Set(), hits = [];
-    function walk(root) {
-      for (const el of root && root.querySelectorAll ? root.querySelectorAll('*') : []) {
-        if (s.has(el)) continue; s.add(el);
-        const box = el.getBoundingClientRect();
-        const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
-        if (box.width && box.height && text.toLowerCase() === want) hits.push({el, area: box.width * box.height});
-        if (el.shadowRoot) walk(el.shadowRoot);
-      }
-    }
-    walk(document);
-    hits.sort((a, b) => a.area - b.area);
-    return hits.length ? hits[0].el : null;
-  }
-  let opt = findOption();
-  if (!opt) {
-    for (const list of lists.slice(0, 5)) {
-      for (let i = 0; i < 40 && !opt; i++) {
-        list.scrollTop = list.scrollHeight;
-        opt = findOption();
-        if (opt) break;
-        list.scrollTop = Math.max(0, list.scrollTop - 400);
-        opt = findOption();
-      }
-      if (opt) break;
-    }
-  }
-  if (!opt) return {ok: false, reason: 'option never mounted', lists: lists.length};
-  opt.scrollIntoView({block: 'center'});
-  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-    opt.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, composed: true}));
-  }
-  return {ok: true};
-}"""
+    The option is clicked with the mouse. Dispatching a MouseEvent at it would
+    be simpler and would arrive with isTrusted: false.
+    """
+    for attempt in range(passes):
+        if await ui.click_text_in_shadow(page, language, timeout_ms=600):
+            log(f"  picked {language!r} after {attempt} scrolls")
+            return True
+        if not await ui.wheel_scroll_list(page):
+            return False
+    return False
 
 
 async def run(args):
@@ -98,16 +44,14 @@ async def run(args):
         await page.wait_for_timeout(8000)
         await ui.dismiss_overlays(page)
 
-        if not await page.evaluate(CLICK_TEXT_JS, "set language"):
+        if not await ui.click_text_in_shadow(page, "set language", timeout_ms=10_000):
             raise RuntimeError("Set language control not found")
         await page.wait_for_timeout(1500)
 
-        result = await page.evaluate(SCROLL_FIND_CLICK_JS, args.language)
-        log(f"  option pick: {result}")
-        if not result.get("ok"):
+        if not await pick_option(page, args.language):
             raise RuntimeError(f"option {args.language!r} not reachable")
         await page.wait_for_timeout(1200)
-        if not await page.evaluate(CLICK_TEXT_JS, "confirm"):
+        if not await ui.click_text_in_shadow(page, "confirm", timeout_ms=10_000):
             raise RuntimeError("Confirm control not found")
         await page.wait_for_timeout(3000)
 
