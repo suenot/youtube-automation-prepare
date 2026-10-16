@@ -300,7 +300,10 @@ async def _fill_upload_contenteditable(page, loc, value, field_name="field"):
             await loc.focus(timeout=5000)
             await page.keyboard.press("Meta+A")
             await page.keyboard.press("Delete")
-            await human.type_segments(page, value)
+            # A title is short enough to retype; a description is written
+            # before the upload and pasted, which is what Studio sees from a
+            # person. human.enter_text decides by the text itself.
+            await human.enter_text(page, loc, value, read_back=loc.inner_text)
             await page.wait_for_timeout(600)
             actual = await loc.inner_text()
             if not _same_field_text(actual, value):

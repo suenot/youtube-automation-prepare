@@ -1,5 +1,7 @@
 import pytest
 
+import human
+
 from publish import (details_validation_issues, format_validation_issues, save,
                      _fill_upload_contenteditable, _upload_route,
                      _wait_for_upload_launcher, find_by_title, verify_before_save,
@@ -94,23 +96,41 @@ class ContenteditableKeyboard:
     that went back to putting text in without typing it fails this test.
     """
 
-    def __init__(self, field):
+    def __init__(self, field, paste_lands=False):
         self.field = field
+        self.paste_lands = paste_lands
+        self.typed = ""
 
     async def press(self, keys):
         if keys == "Delete":
             self.field.value = ""
+        elif keys == human.PASTE_KEY and self.paste_lands:
+            self.field.value += self.field.clipboard
 
     async def insert_text(self, value):
+        self.typed += value
         self.field.value += value
 
     async def type(self, value, delay=0):
+        self.typed += value
         self.field.value += value
 
 
+class ContenteditableMouse:
+    async def move(self, _x, _y):
+        return None
+
+    async def down(self):
+        return None
+
+    async def up(self):
+        return None
+
+
 class ContenteditablePage:
-    def __init__(self, field):
-        self.keyboard = ContenteditableKeyboard(field)
+    def __init__(self, field, paste_lands=False):
+        self.keyboard = ContenteditableKeyboard(field, paste_lands)
+        self.mouse = ContenteditableMouse()
 
     async def wait_for_timeout(self, _timeout_ms):
         return None
@@ -122,9 +142,13 @@ class ContenteditablePage:
 class PolymerContenteditable:
     def __init__(self):
         self.value = ""
+        self.clipboard = ""
 
     async def scroll_into_view_if_needed(self, timeout=0):
         return None
+
+    async def bounding_box(self):
+        return {"x": 10, "y": 20, "width": 400, "height": 90}
 
     async def click(self, timeout=0):
         return None
@@ -133,19 +157,43 @@ class PolymerContenteditable:
         return None
 
     async def fill(self, _value):
-        raise AssertionError("The field must be typed into, not filled")
+        raise AssertionError("The field must never be filled")
+
+    async def press(self, _keys):
+        return None
 
     async def inner_text(self):
         return self.value
 
 
 @pytest.mark.asyncio
-async def test_contenteditable_is_typed_into_not_filled():
+async def test_a_description_is_pasted_the_way_a_person_pastes_one(monkeypatch):
+    """Nobody composes a description in the upload form; they paste it."""
     field = PolymerContenteditable()
+    page = ContenteditablePage(field, paste_lands=True)
+    monkeypatch.setattr(human, "read_clipboard", lambda: field.clipboard)
+    monkeypatch.setattr(human, "write_clipboard",
+                        lambda text: setattr(field, "clipboard", text) or True)
+
+    long_description = "Plymouth lies buried under volcanic deposits. " * 4
+    assert await _fill_upload_contenteditable(
+        page, field, long_description, "description") is True
+    assert field.value == long_description
+    assert page.keyboard.typed == "", "The description was typed, not pasted"
+
+
+@pytest.mark.asyncio
+async def test_without_a_clipboard_the_text_is_typed(monkeypatch):
+    """A browser that cannot reach the clipboard still gets real key events."""
+    field = PolymerContenteditable()
+    page = ContenteditablePage(field)
+    monkeypatch.setattr(human, "read_clipboard", lambda: None)
+    monkeypatch.setattr(human, "write_clipboard", lambda _text: False)
 
     assert await _fill_upload_contenteditable(
-        ContenteditablePage(field), field, "Описание", "description") is True
+        page, field, "Описание", "description") is True
     assert field.value == "Описание"
+    assert page.keyboard.typed == "Описание"
 
 
 class MustNotClickSavePage:

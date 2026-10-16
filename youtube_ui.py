@@ -192,7 +192,7 @@ async def fill_contenteditable(page, loc, text):
         await page.keyboard.press("Delete")
         await page.wait_for_timeout(150)
         # type(delay=0) is a metronome with no gap at all between keystrokes.
-        await human.type_segments(page, text)
+        await human.enter_text(page, loc, text, read_back=loc.inner_text)
         await page.wait_for_timeout(300)
         return True
     except Exception:
