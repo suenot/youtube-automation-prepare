@@ -1,6 +1,7 @@
 import pytest
 
 import human
+import publish
 
 from publish import (details_validation_issues, format_validation_issues, save,
                      _fill_upload_contenteditable, _upload_route,
@@ -224,6 +225,68 @@ class UnreadablePage:
 async def test_duplicate_check_stops_on_navigation_failure():
     with pytest.raises(RuntimeError, match="refusing upload"):
         await find_by_title(UnreadablePage(), "UCtarget", "Title")
+
+
+class ContentListLocator:
+    def __init__(self):
+        self.first = self
+
+    async def wait_for(self, **_kwargs):
+        return None
+
+
+class FlakyContentListPage:
+    """Studio content list that shows its error state on the first load of a tab."""
+
+    def __init__(self, rows_by_tab):
+        self.rows_by_tab = rows_by_tab
+        self.loads = []
+        self.url = ""
+
+    async def goto(self, url, **_kwargs):
+        self.url = url
+        self.loads.append(url.rsplit("/", 1)[1])
+
+    async def wait_for_timeout(self, _ms):
+        return None
+
+    def locator(self, _selector):
+        return ContentListLocator()
+
+    async def evaluate(self, script):
+        tab = self.loads[-1]
+        if script == publish.CONTENT_ROWS_JS:
+            if self.loads.count(tab) == 1:
+                return []
+            return self.rows_by_tab[tab]
+        return "oops, something went wrong. retry"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_check_reloads_a_content_list_that_failed_to_render():
+    page = FlakyContentListPage({
+        "short": [{"id": "abcdefghijk", "text": "0:35 Fifteen Caribbean Places Have Fewer Residents"}],
+        "upload": [],
+    })
+
+    assert await find_by_title(
+        page, "UCtarget", "Fifteen Caribbean Places Have Fewer Residents") == "abcdefghijk"
+    assert page.loads == ["short", "short"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_check_refuses_after_every_load_fails():
+    page = FlakyContentListPage({"short": [], "upload": []})
+
+    async def always_broken(script):
+        if script == publish.CONTENT_ROWS_JS:
+            return []
+        return "oops, something went wrong. retry"
+
+    page.evaluate = always_broken
+    with pytest.raises(RuntimeError, match="Duplicate check on /short failed"):
+        await find_by_title(page, "UCtarget", "Title")
+    assert page.loads == ["short"] * publish.DUPLICATE_CHECK_ATTEMPTS
 
 
 @pytest.mark.asyncio

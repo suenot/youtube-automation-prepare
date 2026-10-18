@@ -64,6 +64,9 @@ def _norm(s):
     return "".join(c for c in s.lower() if c.isalnum())
 
 
+DUPLICATE_CHECK_ATTEMPTS = 3
+
+
 async def find_by_title(page, channel_id, title):
     """Return the id of a video already on the channel with this title, or "".
 
@@ -77,22 +80,29 @@ async def find_by_title(page, channel_id, title):
     if not needle:
         return ""
     for tab in ("short", "upload"):
-        try:
-            await page.goto(f"{STUDIO}/channel/{channel_id}/videos/{tab}",
-                            wait_until="domcontentloaded", timeout=60_000)
-            await page.wait_for_timeout(9000)
-            await page.locator("ytcp-video-row, ytcp-video-section-content").first.wait_for(
-                state="visible", timeout=30_000)
-            if channel_id_from_url(page.url) != channel_id:
-                raise RuntimeError("Studio changed channel during duplicate check")
-            rows = await page.evaluate(CONTENT_ROWS_JS)
-            if not rows:
-                text = await ui.all_text(page)
-                if not any(marker in text for marker in (
-                        "no content available", "no videos found", "upload your first video")):
-                    raise RuntimeError("No loaded video rows or confirmed empty content list")
-        except Exception as e:
-            raise RuntimeError(f"Duplicate check on /{tab} failed; refusing upload") from e
+        # Studio's content list intermittently renders "Oops, something went
+        # wrong" instead of rows; a fresh load usually clears it. Only a list
+        # that never loads refuses the upload.
+        for attempt in range(1, DUPLICATE_CHECK_ATTEMPTS + 1):
+            try:
+                await page.goto(f"{STUDIO}/channel/{channel_id}/videos/{tab}",
+                                wait_until="domcontentloaded", timeout=60_000)
+                await page.wait_for_timeout(9000)
+                await page.locator("ytcp-video-row, ytcp-video-section-content").first.wait_for(
+                    state="visible", timeout=30_000)
+                if channel_id_from_url(page.url) != channel_id:
+                    raise RuntimeError("Studio changed channel during duplicate check")
+                rows = await page.evaluate(CONTENT_ROWS_JS)
+                if not rows:
+                    text = await ui.all_text(page)
+                    if not any(marker in text for marker in (
+                            "no content available", "no videos found", "upload your first video")):
+                        raise RuntimeError("No loaded video rows or confirmed empty content list")
+                break
+            except Exception as e:
+                if attempt == DUPLICATE_CHECK_ATTEMPTS:
+                    raise RuntimeError(f"Duplicate check on /{tab} failed; refusing upload") from e
+                log(f"  duplicate check on /{tab}: attempt {attempt} unreadable ({e}); reloading")
         for row in rows:
             if needle in _norm(row["text"]):
                 return row["id"]
