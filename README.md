@@ -30,7 +30,9 @@ through logged-in browser sessions (Camoufox) and local media tooling.
 > ⚠️ **ACCOUNT SAFETY — READ THIS**
 > The Camoufox profile (`.camoufox_profile/`) holds **live Google session
 > cookies**. Anyone who gets it **controls your YouTube/Google account**. It is
-> git-ignored and a pre-commit hook blocks it — **never** commit it, the
+> git-ignored, and `.githooks/pre-commit` blocks it once you run
+> `git config core.hooksPath .githooks` (git does not enable a tracked hook
+> on its own; see Setup) — **never** commit it, the
 > fingerprint (`.camoufox_fp.pkl`), `debug/` screenshots (they show your logged-in
 > account), or any `*.sqlite` / `cookies*.json`. This repo is public; keep the
 > session private.
@@ -49,6 +51,7 @@ release; a different build is rejected before launch.
 
 ```bash
 python3.11 -m venv venv && venv/bin/pip install -r requirements.txt
+git config core.hooksPath .githooks      # one-time per clone: enables the secret-audit pre-commit hook
 venv/bin/python -m camoufox fetch      # one-time: download the Camoufox browser
 
 # One-time: sign into the TARGET YouTube account (persists in .camoufox_profile/)

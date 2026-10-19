@@ -15,7 +15,7 @@ Versioning.
 
 ### Added
 
-- `human.py`, the input module measured and documented in `docs-site/@docs/guides/what-a-page-sees-when-we-type.md`, kept in step with the copy in `tiktok-automation`: an eased approach to a control, a pause before pressing, typing with a varying interval, insertion for what a keyboard cannot produce, and a real clipboard paste behind an opt-in.
+- `human.py`, the input module measured and documented in `docs-site/@docs/guides/what-a-page-sees-when-we-type.md`, kept in step with the copy in `tiktok-automation`: an eased approach to a control, a pause before pressing, typing with a varying interval, insertion for what a keyboard cannot produce, and a real clipboard paste, which is the default for long, multi-line or non-ASCII text (`allow_clipboard=False` turns it off).
 - `youtube_ui.click_text_in_shadow` and `youtube_ui.wheel_scroll_list`.
 - Test that fails the build if any module in the repository fabricates a browser event or calls `execCommand` again, and a test that the upload field is typed into rather than filled.
 
