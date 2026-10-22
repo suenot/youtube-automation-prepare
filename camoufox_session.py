@@ -12,6 +12,8 @@ HERE = Path(__file__).resolve().parent
 PROFILE_DIR = HERE / ".camoufox_profile"
 FP_FILE = HERE / ".camoufox_fp.pkl"
 DEBUG_DIR = HERE / "debug"
+WINDOW_WIDTH, WINDOW_HEIGHT = 1700, 1060
+VIEWPORT = {"width": 1700, "height": 948}
 
 
 def log(msg):
@@ -54,30 +56,54 @@ def profile_lock(profile=PROFILE_DIR):
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def verify_browser_build():
-    from camoufox.browser_pin import load_pin
-    from camoufox.multiversion import get_active_path
+# The owner pinned this build (158.0 beta.40) instead of the package's paired
+# 156.0.1-beta.34. It lives in the project, so the pin check never depends on a
+# cache or on another project's folder. Change both together.
+BROWSER_DIR = HERE / ".camoufox-browser"
+BROWSER_EXECUTABLE = BROWSER_DIR / "Camoufox.app" / "Contents" / "MacOS" / "camoufox"
+PINNED_BROWSER = ("158.0", "beta.40")
 
-    executable = os.environ.get("CAMOUFOX_EXECUTABLE_PATH")
-    if executable:
-        metadata = next((p / "version.json" for p in Path(executable).resolve().parents
-                         if (p / "version.json").is_file()), None)
-    else:
-        active = get_active_path()
-        metadata = active / "version.json" if active else None
-    if not metadata or not metadata.is_file():
-        raise RuntimeError("Install the paired browser with python -m camoufox fetch")
-    pin = load_pin()
+
+def verify_browser_build():
+    """Launch only the pinned build; return its Firefox version for the library."""
+    metadata = BROWSER_DIR / "version.json"
+    if not BROWSER_EXECUTABLE.is_file() or not metadata.is_file():
+        raise RuntimeError(f"Pinned Camoufox {'-'.join(PINNED_BROWSER)} missing in {BROWSER_DIR}")
     actual = json.loads(metadata.read_text(encoding="utf-8"))
-    if not pin or (actual.get("version"), actual.get("build")) != (pin.version, pin.build):
-        raise RuntimeError("Camoufox browser differs from the package's paired release")
+    found = (actual.get("version"), actual.get("build") or actual.get("release"))
+    if found != PINNED_BROWSER:
+        raise RuntimeError(f"Camoufox browser is {'-'.join(map(str, found))}, pinned {'-'.join(PINNED_BROWSER)}")
+    os.environ["CAMOUFOX_EXECUTABLE_PATH"] = str(BROWSER_EXECUTABLE)
+    return found[0]
+
+
+def _normalize_window(fp):
+    # The fingerprint pins the real window size. A stored or generated one can be
+    # small or square; always use a normal landscape window that fits the screen.
+    fp.setdefault("window", {}).update(
+        innerWidth=VIEWPORT["width"], innerHeight=VIEWPORT["height"],
+        outerWidth=WINDOW_WIDTH, outerHeight=WINDOW_HEIGHT, screenX=0, screenY=25)
+    return fp
+
+
+def _reset_window_size(profile_dir):
+    # Firefox restores the last window size from xulstore.json; a small or square
+    # leftover makes every run open a cramped window. Force a normal landscape one.
+    store = Path(profile_dir) / "xulstore.json"
+    try:
+        data = json.loads(store.read_text(encoding="utf-8")) if store.exists() else {}
+    except (OSError, ValueError):
+        data = {}
+    win = data.setdefault("chrome://browser/content/browser.xhtml", {}).setdefault("main-window", {})
+    win.update(width=str(WINDOW_WIDTH), height=str(WINDOW_HEIGHT), screenX="0", screenY="25", sizemode="normal")
+    store.write_text(json.dumps(data), encoding="utf-8")
 
 
 @asynccontextmanager
 async def make_camoufox(headless=False, profile_dir=PROFILE_DIR, profile_locked=False):
     from camoufox.async_api import AsyncCamoufox
     from camoufox.fingerprints import generate_fingerprint
-    verify_browser_build()
+    browser_version = verify_browser_build()
     profile_dir = Path(profile_dir)
     profile_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     profile_dir.chmod(0o700)
@@ -88,6 +114,8 @@ async def make_camoufox(headless=False, profile_dir=PROFILE_DIR, profile_locked=
                 block_images=False, persistent_context=True,
                 user_data_dir=str(profile_dir), window=(1920, 1080),
                 locale="en-US", main_world_eval=True, i_know_what_im_doing=True)
+    # The library cannot read the version of a build outside its own cache.
+    opts["ff_version"] = int(browser_version.split(".")[0])
     # The refresh path holds profile_lock around its cookie backup, browser use,
     # and rollback; it must not try to acquire the same flock a second time.
     with nullcontext() if profile_locked else profile_lock(profile_dir):
@@ -100,7 +128,8 @@ async def make_camoufox(headless=False, profile_dir=PROFILE_DIR, profile_locked=
                 fp = generate_fingerprint(os="macos")
                 fp_path.write_text(json.dumps(fp), encoding="utf-8")
                 fp_path.chmod(0o600)
-        opts["fingerprint"] = fp
+        opts["fingerprint"] = _normalize_window(fp)
+        _reset_window_size(profile_dir)
         try:
             async with AsyncCamoufox(**opts) as context:
                 yield context
@@ -115,7 +144,7 @@ async def make_camoufox(headless=False, profile_dir=PROFILE_DIR, profile_locked=
 
 async def prepare_page(context):
     page = context.pages[0] if context.pages else await context.new_page()
-    await page.set_viewport_size({"width": 1920, "height": 1080})
+    await page.set_viewport_size(VIEWPORT)
     return page
 
 

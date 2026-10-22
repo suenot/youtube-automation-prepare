@@ -21,6 +21,8 @@ Versioning.
 
 ### Changed
 
+- Pin the Camoufox browser to build 158.0 beta.40, kept in the project (`.camoufox-browser/`, git-ignored) instead of the package's paired 156.0.1-beta.34 and the user cache. `camoufox_session.verify_browser_build` refuses any other build, and passes `ff_version` because the library cannot read the version of a build outside its cache.
+- Always open Camoufox as a wide landscape window (1700x1060, viewport 1700x948). The fingerprint's `window` block and the profile's `xulstore.json` are rewritten on every launch, so a stored small or square window can no longer come back.
 - Rename the repository to `youtube-automation-prepare` and update the README
   project name and pipeline links.
 

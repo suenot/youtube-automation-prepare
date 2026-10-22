@@ -13,3 +13,4 @@ input/
 *.log
 *.sqlite
 cookies*.json
+.camoufox-browser/
