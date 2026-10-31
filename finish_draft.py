@@ -48,19 +48,7 @@ async def click_draft_banner(page, button):
 
 async def finish(page, vid: str, meta, thumbnail: str, visibility: str,
                  made_for_kids: bool, debug: bool) -> bool:
-    await page.goto(STUDIO_VIDEO.format(vid=vid), wait_until="domcontentloaded",
-                    timeout=60_000)
-    await ui.dismiss_overlays(page)
-
-    button = await wait_for_draft_banner(page)
-    if button is None:
-        log(f"  {vid} is not a draft; use set_visibility.py instead")
-        return False
-
-    # The action is inside the banner's shadow DOM. A text query can see the
-    # label but cannot click it, so target the actual button host.
-    if not await click_draft_banner(page, button):
-        log(f"  {vid} could not open the draft wizard")
+    if not await ui.open_draft_via_ui(page, log):
         return False
     await page.wait_for_timeout(3000)
 

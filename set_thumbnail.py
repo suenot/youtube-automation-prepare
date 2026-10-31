@@ -25,9 +25,10 @@ STUDIO_VIDEO = "https://studio.youtube.com/video/{vid}/edit"
 
 
 async def set_one(page, vid: str, png: Path) -> bool:
-    await page.goto(STUDIO_VIDEO.format(vid=vid), wait_until="domcontentloaded",
-                    timeout=60_000)
-    await page.wait_for_timeout(6000)
+    from youtube_ui import open_video_via_ui
+    if not await open_video_via_ui(page, vid, log):
+        return False
+    await page.wait_for_timeout(4000)
 
     el = (await page.query_selector("ytcp-thumbnail-uploader input[type='file']")
           or await page.query_selector("input[type='file']"))

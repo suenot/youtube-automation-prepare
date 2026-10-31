@@ -259,3 +259,96 @@ async def dismiss_overlays(page):
                 await page.wait_for_timeout(400)
         except Exception:
             continue
+
+
+JS_FIND_RECT = r"""
+({text, href}) => {
+  const seen=new Set(); let hit=null;
+  function walk(root){
+    if(hit||!root||seen.has(root))return; seen.add(root);
+    let els; try{els=root.querySelectorAll('*')}catch(e){return}
+    for(const el of els){
+      if(hit)return;
+      if(el.shadowRoot) walk(el.shadowRoot);
+      const ok = href ? (el.tagName==='A' && (el.getAttribute('href')||'').includes(href))
+                      : (((el.innerText||el.textContent||'').replace(/\s+/g,' ').trim())===text && el.children.length<4);
+      if(ok){const r=el.getBoundingClientRect();
+        if(r.width>0&&r.height>0){hit={x:r.x+r.width/2,y:r.y+r.height/2};return}}
+    }
+  }
+  walk(document); return hit;
+}
+"""
+
+
+async def open_video_via_ui(page, vid: str, log=print) -> bool:
+    """Reach a video's details page by clicking Studio -> Content -> the video row,
+    the way a person does, instead of a direct goto to /video/<id>/edit."""
+    import random
+
+    async def pause(lo=1200, hi=2600):
+        await page.wait_for_timeout(random.randint(lo, hi))
+
+    async def click_found(arg, tries=15):
+        for _ in range(tries):
+            pos = await page.evaluate(JS_FIND_RECT, arg)
+            if pos:
+                await page.mouse.move(pos["x"] - random.randint(5, 25),
+                                      pos["y"] - random.randint(3, 12))
+                await pause(300, 800)
+                await page.mouse.click(pos["x"], pos["y"])
+                return True
+            await pause(1500, 2500)
+        return False
+
+    if f"/video/{vid}" in page.url:
+        return True
+    if "studio.youtube.com" not in page.url:
+        await page.goto("https://studio.youtube.com", wait_until="domcontentloaded",
+                        timeout=60_000)
+        await pause(5000, 8000)
+    await pause(2000, 3500)
+    if not await click_found({"text": "Content"}):
+        log("  open_video_via_ui: Content item not found, url=" + page.url)
+        try:
+            await page.screenshot(path="debug/nav_content_missing.png")
+        except Exception:
+            pass
+        return False
+    await pause(3000, 5000)
+    if not await click_found({"href": f"/video/{vid}"}):
+        log(f"  open_video_via_ui: row for {vid} not on first page of Content")
+        return False
+    await pause(4000, 6000)
+    return True
+
+
+async def open_draft_via_ui(page, log=print) -> bool:
+    """Studio -> Content -> the draft row's "Edit draft" button (reopens the upload
+    wizard with the file attached). Clicks the first draft in the list."""
+    import random
+
+    async def pause(lo, hi):
+        await page.wait_for_timeout(random.randint(lo, hi))
+
+    if "studio.youtube.com" not in page.url:
+        await page.goto("https://studio.youtube.com", wait_until="domcontentloaded",
+                        timeout=60_000)
+        await pause(5000, 8000)
+    for arg in ({"text": "Content"}, {"text": "Edit draft"}):
+        ok = False
+        for _ in range(15):
+            pos = await page.evaluate(JS_FIND_RECT, arg)
+            if pos:
+                await page.mouse.move(pos["x"] - random.randint(5, 25),
+                                      pos["y"] - random.randint(3, 12))
+                await pause(300, 800)
+                await page.mouse.click(pos["x"], pos["y"])
+                ok = True
+                break
+            await pause(1500, 2500)
+        if not ok:
+            log(f"  open_draft_via_ui: {arg['text']} not found, url={page.url}")
+            return False
+        await pause(3000, 5000)
+    return True

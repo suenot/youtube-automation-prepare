@@ -172,9 +172,9 @@ async def set_video_language(page, language: str) -> bool:
 
 async def edit_one(page, vid: str, meta, language: str = "") -> bool:
     log(f"  opening {vid}")
-    await page.goto(STUDIO_VIDEO.format(vid=vid), wait_until="domcontentloaded",
-                    timeout=60_000)
-    await page.wait_for_timeout(7000)
+    if not await ui.open_video_via_ui(page, vid, log):
+        return False
+    await page.wait_for_timeout(5000)
     await ui.dismiss_overlays(page)
     log("  page loaded")
 
