@@ -81,10 +81,11 @@ async def _click_switch_card(page, needle):
     enough not to also match '@marketmaker-school-ru')."""
     # The Accounts panel can take a few seconds to populate after "Switch
     # account"; wait for the target card to actually render before clicking.
-    for sel in (f"ytd-account-item-renderer:has-text(\"{needle}\")",
-                f"tp-yt-paper-item:has-text(\"{needle}\")",
-                f"a#endpoint:has-text(\"{needle}\")"):
-        loc = page.locator(sel)
+    # The handle must end there: '@marketmaker-zh' is a prefix of '@marketmaker-zh-hant'.
+    import re
+    exact = re.compile(re.escape(needle) + r"(?![-\w])", re.I)
+    for sel in ("ytd-account-item-renderer", "tp-yt-paper-item", "a#endpoint"):
+        loc = page.locator(sel).filter(has_text=exact)
         try:
             await loc.first.wait_for(state="visible", timeout=8000)
         except Exception:
@@ -92,7 +93,7 @@ async def _click_switch_card(page, needle):
         if await _real_click(page, loc.first):
             return True
     try:
-        await page.get_by_text(needle).first.click(timeout=4000)
+        await page.get_by_text(exact).first.click(timeout=4000)
         return True
     except Exception:
         return False
