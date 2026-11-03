@@ -46,7 +46,10 @@ async def set_one(page, vid: str, png: Path) -> bool:
             return True
         except Exception:
             continue
-    log(f"  {vid} could not click Save")
+    shot = Path(__file__).parent / "debug" / f"thumb_fail_{vid}.png"
+    shot.parent.mkdir(exist_ok=True)
+    await page.screenshot(path=str(shot))
+    log(f"  {vid} could not click Save (screenshot: {shot})")
     return False
 
 
