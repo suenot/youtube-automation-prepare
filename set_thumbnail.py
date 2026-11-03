@@ -48,6 +48,10 @@ async def set_one(page, vid: str, png: Path) -> bool:
             continue
     shot = Path(__file__).parent / "debug" / f"thumb_fail_{vid}.png"
     shot.parent.mkdir(exist_ok=True)
+    try:  # the thumbnail section sits below the fold: show it, not the description
+        await page.locator("ytcp-thumbnail-uploader, #still-picker").first.scroll_into_view_if_needed(timeout=3000)
+    except Exception:
+        log("  no thumbnail uploader on the page")
     await page.screenshot(path=str(shot))
     log(f"  {vid} could not click Save (screenshot: {shot})")
     return False
