@@ -50,7 +50,10 @@ async def find_row(page, vid):
 
 
 async def click_at(page, pos):
-    await page.mouse.move(pos["x"] - 12, pos["y"])
+    # park the mouse off the table first: a "No notices" tooltip from the Notices cell can cover the Visibility cell
+    await page.mouse.move(40, 40)
+    await page.wait_for_timeout(1200)
+    await page.mouse.move(pos["x"] + 12, pos["y"])
     await page.wait_for_timeout(500)
     await page.mouse.move(pos["x"], pos["y"])
     await page.wait_for_timeout(300)
