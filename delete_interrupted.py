@@ -14,7 +14,7 @@ import sys
 from camoufox_session import make_camoufox, prepare_page, log, shot
 from channel import select_channel
 
-JS_ROWS = """title => {
+JS_ROWS = """({title, notice}) => {
   const walk = (n, out) => { for (const e of n.querySelectorAll('*')) { if (e.shadowRoot) walk(e.shadowRoot, out); out.push(e); } };
   const all = []; walk(document, all);
   const rows = all.filter(e => e.tagName === 'YTCP-VIDEO-ROW');
@@ -22,7 +22,7 @@ JS_ROWS = """title => {
   for (const r of rows) {
     const o = []; walk(r, o);
     const txt = o.filter(e => e.children.length === 0).map(e => (e.textContent || '').trim()).join(' | ');
-    if (!txt.includes(title) || !/Upload interrupted/i.test(txt)) continue;
+    if (!txt.includes(title) || !new RegExp(notice, 'i').test(txt)) continue;
     const b = o.find(e => e.tagName === 'YTCP-BUTTON' && /Delete video/i.test(e.textContent || ''));
     if (!b) continue;
     r.scrollIntoView({block: 'center'});
@@ -51,7 +51,7 @@ async def run(args):
         await page.wait_for_timeout(5000)
         await page.get_by_text("Content", exact=True).first.click()
         await page.wait_for_timeout(6000)
-        rows = await page.evaluate(JS_ROWS, args.title)
+        rows = await page.evaluate(JS_ROWS, {'title': args.title, 'notice': args.notice})
         log(f"  interrupted rows matching title: {len(rows)}")
         if len(rows) != 1:
             await shot(page, "interrupted_rows", True)
@@ -85,7 +85,7 @@ async def run(args):
         await page.wait_for_timeout(6000)
         await page.reload(wait_until="domcontentloaded")
         await page.wait_for_timeout(7000)
-        left = await page.evaluate(JS_ROWS, args.title)
+        left = await page.evaluate(JS_ROWS, {'title': args.title, 'notice': args.notice})
         log(f"  RESULT: {'DELETED' if not left else 'STILL THERE'}")
         return 0 if not left else 1
 
@@ -94,4 +94,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("channel_handle")
     p.add_argument("--title", required=True)
+    p.add_argument("--notice", default="Upload interrupted",
+                   help="regex the row's notice must match, e.g. 'Processing abandoned'")
     sys.exit(asyncio.run(run(p.parse_args())))

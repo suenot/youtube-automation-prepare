@@ -116,6 +116,24 @@ async def save_details(page):
     await sv.wait_for_save_landed(page, save)
 
 
+async def remove_one(page, vid, title):
+    await open_details(page, vid)
+    await open_dialog(page)
+    st = await page.evaluate(JS_STATE, title)
+    if not st.get("hit") or not st["hit"]["checked"]:
+        log(f"  {vid}: not in playlist, nothing to remove")
+        return
+    await page.mouse.click(st["hit"]["x"], st["hit"]["y"])
+    await page.wait_for_timeout(1000)
+    st = await page.evaluate(JS_STATE, title)
+    if st["hit"]["checked"]:
+        raise RuntimeError("checkbox did not turn off")
+    await page.locator("ytcp-playlist-dialog").get_by_role("button", name="Done", exact=True).last.click()
+    await page.wait_for_timeout(1500)
+    await save_details(page)
+    log(f"  {vid}: removed from playlist")
+
+
 async def add_one(page, vid, title, description, allow_create):
     await open_details(page, vid)
     await open_dialog(page)
@@ -156,10 +174,18 @@ async def run(args):
         await page.wait_for_timeout(4000)
         await select_channel(page, handle=args.channel_handle)
         allow_create = True
+        failed = []
         for vid in ids:
-            if await add_one(page, vid, args.title, args.description, allow_create):
-                pass
-            allow_create = False  # never create a second playlist with the same title
+            try:
+                if args.remove:
+                    await remove_one(page, vid, args.title)
+                elif await add_one(page, vid, args.title, args.description, allow_create):
+                    allow_create = False  # never create a second playlist with the same title
+            except Exception as exc:  # a missing/removed video must not stop the rest
+                log(f"  FAILED {vid}: {str(exc).splitlines()[0]}")
+                failed.append(vid)
+        if failed:
+            log(f"FAILED IDS {args.channel_handle}: {','.join(failed)}")
         log(f"RESULT {args.channel_handle}: {len(ids)} videos in '{args.title}'")
 
 
@@ -169,6 +195,7 @@ def main():
     p.add_argument("--title", required=True)
     p.add_argument("--description", default="")
     p.add_argument("--ids", required=True, help="comma-separated, in watching order; pass as --ids=...")
+    p.add_argument("--remove", action="store_true", help="take the ids OUT of the playlist (to re-add them in order)")
     args = p.parse_args()
     try:
         asyncio.run(run(args))
