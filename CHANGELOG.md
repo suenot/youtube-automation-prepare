@@ -7,6 +7,10 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Document the visible Camoufox handoff for Marketmaker identity checks and CAPTCHAs.
+
 ### Fixed
 
 - Click Studio's controls with the mouse instead of dispatching `MouseEvent` sequences at the elements found in the shadow DOM. A dispatched event reaches the handler carrying `isTrusted: false`, which is a page's plainest sign that nobody clicked anything. The shadow-DOM search stays; it only reads. Affects `finish_draft_from_list.py`, `set_video_language.py` and `upload_subtitles.py`.

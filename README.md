@@ -147,6 +147,19 @@ a new request ID to blindly retry. Title lookup also blocks existing uploads
 and stops when Studio cannot be inspected. `--allow-duplicate` does not override
 the durable request guard.
 
+### Marketmaker identity checks
+
+When Studio asks for identity verification or shows a CAPTCHA, hand the task
+to the owner in a visible window on the dedicated Camoufox profile. Keep the
+window open while the owner is working. When the check appears in a background
+session, wait for the active Studio operation to release the profile before
+opening the visible session. Preserve the original request and any attached
+draft. Reconcile the existing transfer before attempting another attachment.
+
+Tell the owner which channel needs attention after the actual challenge
+appears. A Studio access-denied page requires selecting the correct channel
+before the identity check can be confirmed.
+
 ### Schedule an uploaded video
 
 Scheduling uses the video's Studio edit page, so the exact video id is the
