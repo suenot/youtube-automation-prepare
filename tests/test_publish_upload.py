@@ -314,11 +314,32 @@ async def test_missing_transfer_text_does_not_confirm_completion(monkeypatch):
             self.waits += 1
 
     ticks = iter([0, 0, 2])
-    monkeypatch.setattr("publish.time.time", lambda: next(ticks))
+    monkeypatch.setattr("publish.monotonic", lambda: next(ticks))
     monkeypatch.setattr("publish.UPLOAD_WAIT_S", 1)
     page = Page()
     assert await wait_for_upload(page, debug=False) is False
     assert page.waits == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress,complete", [
+    (["uploading 10%", "uploading 57%", "uploading 91%", "upload complete"], True),
+    (["uploading 10%", "uploading 10%", "uploading 9%"], False),
+])
+async def test_transfer_deadline_follows_forward_progress(monkeypatch, progress, complete):
+    class Page:
+        seconds = 0
+
+        async def evaluate(self, _script):
+            return progress[self.seconds // 6]
+
+        async def wait_for_timeout(self, _ms):
+            self.seconds += 6
+
+    page = Page()
+    monkeypatch.setattr("publish.monotonic", lambda: page.seconds)
+    monkeypatch.setattr("publish.UPLOAD_WAIT_S", 10)
+    assert await wait_for_upload(page, debug=False) is complete
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,12 @@ Versioning.
 - Rename the repository to `youtube-automation-prepare` and update the README
   project name and pipeline links.
 
+## [0.2.2] - 2026-11-23
+
+### Fixed
+
+- Keep the Studio transfer open while its upload percentage advances. A stalled transfer still times out and keeps its file available for recovery.
+
 ## [0.2.1] - 2026-10-08
 
 ### Added

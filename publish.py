@@ -4,6 +4,7 @@ import json
 import re
 import sys
 import time
+from time import monotonic
 from pathlib import Path
 
 from camoufox_session import (PROFILE_DIR, make_camoufox, prepare_page,
@@ -727,9 +728,9 @@ async def wait_for_upload(page, debug):
     quitting then discards the video. Poll the dialog until it stops reporting
     progress.
     """
-    deadline = time.time() + UPLOAD_WAIT_S
-    last = ""
-    while time.time() < deadline:
+    deadline = monotonic() + UPLOAD_WAIT_S
+    highest_percent = -1
+    while monotonic() < deadline:
         text = await page.evaluate(UPLOAD_STATUS_JS)
         if not isinstance(text, str):
             raise RuntimeError("Upload status could not be inspected")
@@ -737,11 +738,14 @@ async def wait_for_upload(page, debug):
             log("  upload complete")
             return True
         m = re.search(r"uploading (\d+)%", text)
-        if m and m.group(1) != last:
-            last = m.group(1)
-            log(f"  uploading {last}%")
+        if m:
+            percent = int(m.group(1))
+            if highest_percent < percent <= 100:
+                highest_percent = percent
+                deadline = monotonic() + UPLOAD_WAIT_S
+                log(f"  uploading {percent}%")
         await page.wait_for_timeout(5000)
-    log(f"  ERROR: transfer not confirmed after {UPLOAD_WAIT_S}s")
+    log(f"  ERROR: transfer not confirmed after {UPLOAD_WAIT_S}s without forward progress")
     await shot(page, "yt_09_upload_timeout", debug)
     return False
 
